@@ -39,4 +39,34 @@ int main()
 
         std::cout << n->name << std::endl;
     });
+
+    // iterate over every entity
+
+    for (auto e : reg.alive())
+    {   
+        // get if entity has wanted component
+
+        if (reg.hasComponent<Name>(e))
+        {
+            Name* n = reg.getComponent<Name>(e);
+
+            std::cout << n->name << std::endl;
+
+            // remove component from entity
+
+            reg.removeComponent<Name>(e);
+        }
+
+        //delete entity
+         
+        reg.destroy(e);
+    }
+
+    // remove given component from every entity
+
+    reg.clear<Name>();
+
+    // destroy every entity
+
+    reg.reset();
 }
