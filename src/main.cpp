@@ -1,44 +1,57 @@
-#include "Ecs.h"
-#include <iostream>
+#include "ecs.h"
+#include <chrono>
+
+// component (simple struct with constructor)
+
+struct Name
+{
+    std::string name;
+
+    Name(std::string name) : name(name) {}
+};
 
 int main()
 {
-    // component (simple struct with constructor)
-
-    ECS_COMPONENT(Name)
-    {
-        std::string name;
-
-        Name(std::string name) : name(name) {}
-    };
-    
-    // create registry wich handles entities and components
-
-    ecs::Registry reg;
+    spire::ecs::Registry reg;
 
     // register the youre component, needs the wanted registry and the component struct
 
-    ECS_REGISTER(reg, Name);
+    reg.registerComponent<Name>();
 
     // create entitiy (simple uint32_t)
 
-    ecs::Entity e = reg.create();
+    for (int i = 0; i < spire::ecs::MAX_ENTITIES; ++i) 
+    {
+        spire::ecs::Entity e = reg.create();
 
-    // add the wanted component to the entity 
-    // reg.addComponent<component>(entity, constructor values...);
+        // add the wanted component to the entity 
+        // reg.addComponent<component>(entity, constructor values...);
 
-    reg.addComponent<Name>(e, "Tom");
+        reg.addComponent<Name>(e, "Tom");
+    
+    }
 
     // lambda to iterate over each entity with given components
 
-    reg.each<Name>([&reg](ecs::Entity e)
+    auto time1 = std::chrono::steady_clock::now();
+
+    for (int i = 0; i < 1000; ++i)
     {
-        // get component ptr
+        reg.each<Name>([&reg](spire::ecs::Entity e)
+        {
+            // get component ptr
 
-        Name* n = reg.getComponent<Name>(e);
+            Name* n = reg.getComponent<Name>(e);
 
-        std::cout << n->name << std::endl;
-    });
+            // std::cout << n->name << std::endl;
+        });        
+    }
+
+    auto time2 = std::chrono::steady_clock::now();
+
+    auto time = time2 - time1; 
+
+    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(time).count() << '\n';
 
     // iterate over every entity
 
@@ -50,7 +63,7 @@ int main()
         {
             Name* n = reg.getComponent<Name>(e);
 
-            std::cout << n->name << std::endl;
+            // std::cout << n->name << std::endl;
 
             // remove component from entity
 
