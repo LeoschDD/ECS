@@ -13,6 +13,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <cstdint>
+#include <algorithm>
+#include <thread>
 
 //---------------------------------------------
 // Error handling
@@ -20,11 +23,16 @@
 
 #if defined(_MSC_VER)
     #define DEBUG_BREAK() __debugbreak()
-#elif defined(__GNUC__) || defined(__clang__)
-    #include <csignal>
-    #define DEBUG_BREAK() raise(SIGTRAP)
+#elif defined(__has_builtin) && __has_builtin(__builtin_debugtrap)
+    #define DEBUG_BREAK() __builtin_debugtrap()
+#elif defined(__has_builtin) && __has_builtin(__builtin_trap)
+    #define DEBUG_BREAK() __builtin_trap()
 #else
-    #define DEBUG_BREAK() ((void)0)
+    #ifdef SIGTRAP
+        #define DEBUG_BREAK() std::raise(SIGTRAP)
+    #else
+        #define DEBUG_BREAK() std::abort()
+    #endif
 #endif
 
 // logging
@@ -59,6 +67,7 @@ inline void LOG(const std::string& level, const std::string& msg, const char* fi
 
 // define common types
 
+using u64 = uint64_t;
 using u32 = unsigned int;
 using u16 = unsigned short int;
 using u8  = unsigned char;
@@ -79,6 +88,9 @@ namespace spire::ecs
     inline constexpr Index INVALID_INDEX = std::numeric_limits<Index>::max();
     inline constexpr Entity NONE = std::numeric_limits<Entity>::max();
     inline constexpr Entity MAX_ENTITIES = 1'000'000;
+    inline constexpr Component MAX_COMPONENTS = 64;
+
+    using Signature = u64;
 
     //---------------------------------------------
     // ComponentIDs
@@ -129,7 +141,7 @@ namespace spire::ecs
 
         std::vector<C> m_components;
         std::vector<Entity> m_entities;
-        Page* m_indices[MAX_PAGES]{};
+        std::array<Page*, MAX_PAGES> m_indices{};
     
         ComponentPool()
         {
@@ -150,7 +162,7 @@ namespace spire::ecs
             auto newCap = m_components.size() + CHUNK_SIZE;
             if (newCap <= m_components.capacity() || newCap + CHUNK_SIZE > (size_t)MAX_ENTITIES) return;
             m_components.reserve(m_components.capacity() + CHUNK_SIZE);
-            m_entities.reserve(m_components.capacity() + CHUNK_SIZE);
+            m_entities.reserve(m_entities.capacity() + CHUNK_SIZE);
         }
 
         void add(Entity e, C component)
@@ -168,7 +180,7 @@ namespace spire::ecs
 
             if ((*m_indices[page])[index] == INVALID_INDEX)
             {
-                Index i = m_components.size();
+                Index i = (Index)m_components.size();
                 m_components.push_back(std::move(component));
                 m_entities.push_back(e);
                 (*m_indices[page])[index] = i;
@@ -186,7 +198,7 @@ namespace spire::ecs
             
             if (!m_indices[page] || (*m_indices[page])[index] == INVALID_INDEX) return;
             
-            Index i = m_components.size() - 1;
+            Index i = (Index)m_components.size() - 1;
 
             if ((*m_indices[page])[index] != i)
             {
@@ -210,10 +222,13 @@ namespace spire::ecs
             const size_t page = (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);	
 
-            if (!m_indices[page]) return nullptr;
-            if ((*m_indices[page])[index] == INVALID_INDEX) return nullptr;
+            Page* p = m_indices[page];
+            if (!p) return nullptr;
 
-            return &m_components[(*m_indices[page])[index]];
+            auto i = (*p)[index];
+            if (i == INVALID_INDEX) return nullptr;
+
+            return &m_components[i];
         }
 
         const C* get(Entity e) const
@@ -221,14 +236,17 @@ namespace spire::ecs
             const size_t page = (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);	
 
-            if (!m_indices[page]) return nullptr;
-            if ((*m_indices[page])[index] == INVALID_INDEX) return nullptr;
+            Page* p = m_indices[page];
+            if (!p) return nullptr;
 
-            return &m_components[(*m_indices[page])[index]];
+            auto i = (*p)[index];
+            if (i == INVALID_INDEX) return nullptr;
+
+            return &m_components[i];
         }
 
-        const std::vector<C> &components() const { return m_components; }
-        const std::vector<Entity> &entities() const { return  m_entities; }
+        const std::vector<C>& components() const { return m_components; }
+        const std::vector<Entity>& entities() const { return  m_entities; }
     };
 
     //---------------------------------------------
@@ -253,6 +271,13 @@ namespace spire::ecs
         void registerComponent()
         {
             const Component i = getComponentID<C>();
+
+            if (i >= MAX_COMPONENTS)
+            {   
+                LOG_WARNING("Component limit reached!");
+                return;
+            }
+
             if (i >= m_pools.size()) m_pools.resize(i + 1, nullptr);
             if (!m_pools[i]) m_pools[i] = new ComponentPool<C>();
         }
@@ -278,13 +303,13 @@ namespace spire::ecs
         }
 
         template <typename C>
-        C *get(Entity e)
+        C* get(Entity e)
         {
             return pool<C>().get(e);
         }
 
         template <typename C>
-        const C *get(Entity e) const
+        const C* get(Entity e) const
         {
             return pool<C>().get(e);
         }
@@ -339,10 +364,19 @@ namespace spire::ecs
         std::vector<Entity> m_destroy;
 
         std::vector<Entity> m_alive;
+        std::vector<Signature> m_signatures;
         std::vector<Index> m_indices;
 
+        template <typename... Cs>
+        static Signature getSignature()
+        {
+            Signature s = 0;
+            ((s |= (Signature{1} << getComponentID<Cs>())), ...);
+            return s;
+        } 
+
     public:
-        Registry() : m_indices(MAX_ENTITIES, INVALID_INDEX)
+        Registry() : m_indices(MAX_ENTITIES, INVALID_INDEX), m_signatures(MAX_ENTITIES, 0)
         {
             for (Entity e = 0; e < MAX_ENTITIES; e++) m_available.push(e);
         }
@@ -355,13 +389,14 @@ namespace spire::ecs
             {
                 if (m_indices[e] == INVALID_INDEX) continue;
 
-                Index i = m_alive.size() - 1;
+                Index i = (Index)m_alive.size() - 1;
                 Entity moved = m_alive[i];
                 m_alive[m_indices[e]] = moved;
                 m_indices[moved] = m_indices[e];
 
                 m_alive.pop_back();
                 m_indices[e] = INVALID_INDEX;
+                m_signatures[e] = 0;
 
                 m_componentManager.destroy(e);
                 m_available.push(e);
@@ -388,7 +423,7 @@ namespace spire::ecs
             Entity e = m_available.front();
             m_available.pop();
 
-            m_indices[e] = m_alive.size();
+            m_indices[e] = (Index)m_alive.size();
             m_alive.push_back(e);
 
             return e;
@@ -417,6 +452,8 @@ namespace spire::ecs
             if (!valid(e)) return;
             C component = C(std::forward<Args>(args)...);
             m_componentManager.add<C>(e, component);
+
+            m_signatures[e] |= (Signature{1} << getComponentID<C>());
         }
 
         template<typename C>
@@ -424,6 +461,8 @@ namespace spire::ecs
         {	
             if (!valid(e)) return;
             m_componentManager.remove<C>(e);
+
+            m_signatures[e] &= ~(Signature{1} << getComponentID<C>());
         }
 
         void destroy(Entity e)
@@ -482,21 +521,88 @@ namespace spire::ecs
                 std::terminate();
             }
 
-            std::array<const std::vector<Entity>*, sizeof...(Cs)> lists{
+            Signature s = getSignature<Cs...>();
+
+            std::array<const std::vector<Entity>*, sizeof...(Cs)> entitiesArr{
                 &m_componentManager.pool<Cs>().entities()...
             };
 
-            const std::vector<Entity>* smallest = lists[0];
-            for (const auto* entities : lists)
+            const std::vector<Entity>* smallest = entitiesArr[0];
+            for (const auto* entities : entitiesArr)
             {
                 if (smallest->size() > entities->size()) smallest = entities;
             } 
 
-            for (Entity e : *smallest)
+            for (auto e : *smallest)
             {	
-                bool hasComponents = ((m_componentManager.pool<Cs>().get(e) != nullptr) && ...);
-                if (hasComponents) fn(e);
+                if ((m_signatures[e] & s) != s) continue;
+                fn(e);
             }
+        }
+
+        // has to be thread save
+        
+        template<typename... Cs, typename Fn>
+        void each_parallel(Fn&& fn)
+        {
+            if(!(sizeof...(Cs) > 0))
+            {
+                LOG_ERROR("Fuction needs at least one component!");
+                std::terminate();
+            }
+
+            Signature s = getSignature<Cs...>();
+
+            std::array<const std::vector<Entity>*, sizeof...(Cs)> entitiesArr{
+                &m_componentManager.pool<Cs>().entities()...
+            };
+
+            const std::vector<Entity>* smallest = entitiesArr[0];
+            for (const auto* entities : entitiesArr)
+            {
+                if (smallest->size() > entities->size()) smallest = entities;
+            }
+
+            const auto& vec = *smallest;
+            const size_t size = vec.size();
+
+            const size_t neededSize = 20'000;
+
+            if (size < neededSize) 
+            {
+                for (Entity e : vec)
+                {
+                    if ((m_signatures[e] & s) == s) fn(e);
+                } 
+                return;
+            }
+
+            const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+            const unsigned use = std::max(1u, hw - 1);
+
+            const size_t chunk = (size + use - 1) / use;
+
+            std::vector<std::thread> threads; 
+            threads.reserve(use);
+
+            for (unsigned thread = 0; thread < use; ++thread) 
+            {
+                size_t b = thread * chunk;
+                size_t e = std::min(size, b + chunk);
+
+                if (b >= e) break;
+
+                threads.emplace_back([&, b, e]
+                {
+                    for (size_t i = b; i < e; ++i) 
+                    {
+                        Entity id = vec[i];
+                        if ((m_signatures[id] & s) == s) fn(id);
+                    }
+                });
+            }
+
+            for (auto& t : threads) t.join();
         }
     };
 }

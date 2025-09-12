@@ -37,7 +37,7 @@ int main()
 
     for (int i = 0; i < 1000; ++i)
     {
-        reg.each<Name>([&reg](spire::ecs::Entity e)
+        reg.each_parallel<Name>([&reg](spire::ecs::Entity e)
         {
             // get component ptr
 
