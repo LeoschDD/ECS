@@ -6,7 +6,7 @@ LIB_DIRS = -Llib
 
 LIBS = -lmingw32
 
-OPTIMISATION = -O3
+OPTIMISATION = -O2
 VERSION = -std=c++23
 
 SRC = $(wildcard src/*.cpp)

@@ -37,14 +37,15 @@ int main()
 
     for (int i = 0; i < 1000; ++i)
     {
-        reg.each_parallel<Name>([&reg](spire::ecs::Entity e)
+
+        //iterate through each entity with given components
+
+        reg.view<Name>()->each([&reg](spire::ecs::Entity e, Name& n)
         {
             // get component ptr
 
-            Name* n = reg.getComponent<Name>(e);
-
             // std::cout << n->name << std::endl;
-        });        
+        });
     }
 
     auto time2 = std::chrono::steady_clock::now();
