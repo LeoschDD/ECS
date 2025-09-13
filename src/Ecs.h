@@ -663,7 +663,12 @@ namespace spire::ecs
         View(Registry* reg) 
             : m_reg(reg)
             , m_signature(getSignature<Cs...>()) 
-        {}
+        {
+            for (auto& version : m_versions)
+            {
+                version = std::numeric_limits<size_t>::max();
+            }
+        }
 
         template <typename Fn>
         void each(Fn&& fn)
