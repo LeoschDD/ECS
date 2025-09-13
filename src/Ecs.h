@@ -93,7 +93,7 @@ namespace spire::ecs
 
     inline constexpr Index INVALID_INDEX = std::numeric_limits<Index>::max();
     inline constexpr Entity NONE = std::numeric_limits<Entity>::max();
-    inline constexpr Entity MAX_ENTITIES = 1'000'000;
+    inline constexpr Entity MAX_ENTITIES = 10'000'000;
     inline constexpr Component MAX_COMPONENTS = 64;
 
     static_assert(MAX_COMPONENTS <= 64, 
@@ -184,7 +184,7 @@ namespace spire::ecs
         friend class ComponentManager;
         friend class Registry;
 
-        size_t m_version{0};
+        u64 m_version{0};
 
         static constexpr u16 PAGE_SIZE = 4096;
         static constexpr u32 MAX_PAGES = (MAX_ENTITIES + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -305,7 +305,7 @@ namespace spire::ecs
 
         const std::vector<C>& components() const { return m_components; }
         const std::vector<Entity>& entities() const { return  m_entities; }
-        const size_t version() const noexcept {return m_version;}
+        const u64 version() const noexcept {return m_version;}
     };
 
     //---------------------------------------------
@@ -383,7 +383,7 @@ namespace spire::ecs
         const std::vector<Entity>& entities() const { return pool<C>().entities(); }
 
         template <typename C> 
-        const size_t version() const { return pool<C>().version(); }
+        const u64 version() const { return pool<C>().version(); }
 
         template <typename C> 
         ComponentPool<C>& pool()
@@ -570,7 +570,7 @@ namespace spire::ecs
         }
 
         template <typename C> 
-        const size_t version() const { 
+        const u64 version() const { 
             return m_componentManager.version<C>(); 
         }
 
@@ -622,7 +622,7 @@ namespace spire::ecs
     class View : public ViewBase
     {
     private:
-        std::array<size_t, sizeof...(Cs)> m_versions{};
+        std::array<u64, sizeof...(Cs)> m_versions{};
         std::vector<std::tuple<Entity, Cs*...>> m_cache{};
 
         Signature m_signature;
@@ -630,7 +630,7 @@ namespace spire::ecs
 
         void update()
         {
-            std::array<size_t, sizeof...(Cs)> versions {
+            std::array<u64, sizeof...(Cs)> versions {
                 m_reg->template version<Cs>()...
             };
 
@@ -666,7 +666,7 @@ namespace spire::ecs
         {
             for (auto& version : m_versions)
             {
-                version = std::numeric_limits<size_t>::max();
+                version = std::numeric_limits<u64>::max();
             }
         }
 

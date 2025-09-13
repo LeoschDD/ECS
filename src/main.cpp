@@ -28,7 +28,6 @@ int main()
         // reg.addComponent<component>(entity, constructor values...);
 
         reg.addComponent<Name>(e, "Tom");
-    
     }
 
     // lambda to iterate over each entity with given components
@@ -37,7 +36,6 @@ int main()
 
     for (int i = 0; i < 1000; ++i)
     {
-
         //iterate through each entity with given components
 
         reg.view<Name>()->each([&reg](spire::ecs::Entity e, Name& n)
