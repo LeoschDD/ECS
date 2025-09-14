@@ -1,4 +1,5 @@
-#include "ecs.h"
+#include "spire_ecs.h"
+#include "test.cpp"
 #include <chrono>
 
 // component (simple struct with constructor)
@@ -27,18 +28,18 @@ int main()
         // add the wanted component to the entity 
         // reg.addComponent<component>(entity, constructor values...);
 
-        reg.addComponent<Name>(e, "Tom");
+        reg.addComponent<Name>(e.id(), "Tom");
     }
 
     // lambda to iterate over each entity with given components
 
     auto time1 = std::chrono::steady_clock::now();
 
-    for (int i = 0; i < 1000; ++i)
+    for (int i = 0; i < 100; ++i)
     {
         //iterate through each entity with given components
 
-        reg.view<Name>()->each([&reg](spire::ecs::Entity e, Name& n)
+        reg.view<Name>()->each([&reg](spire::ecs::EntityID e, Name& n)
         {
             // get component ptr
 
@@ -58,7 +59,7 @@ int main()
     {   
         // get if entity has wanted component
 
-        if (reg.hasComponent<Name>(e))
+        if (reg.getComponent<Name>(e))
         {
             Name* n = reg.getComponent<Name>(e);
 
@@ -81,4 +82,6 @@ int main()
     // destroy every entity
 
     reg.reset();
+
+    test();
 }

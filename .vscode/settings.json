@@ -71,6 +71,7 @@
         "forward_list": "cpp",
         "iomanip": "cpp",
         "sstream": "cpp",
-        "functional": "cpp"
+        "functional": "cpp",
+        "barrier": "cpp"
     }
 }

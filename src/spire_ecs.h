@@ -14,12 +14,11 @@
 #include <utility>
 #include <vector>
 #include <cstdint>
-#include <algorithm>
-#include <thread>
 #include <functional>
 #include <unordered_map>
 #include <tuple>
 #include <csignal>
+#include <cstdlib>
 
 //---------------------------------------------
 // Error handling
@@ -41,9 +40,9 @@
 
 // logging
 
-#define LOG_INFO(msg) do { LOG("Info",    msg, __FILE__, __LINE__); } while (0)
+#define LOG_INFO(msg) do    { LOG("Info",    msg, __FILE__, __LINE__); } while (0)
 #define LOG_WARNING(msg) do { LOG("Warning", msg, __FILE__, __LINE__); } while (0)
-#define LOG_ERROR(msg) do { LOG("Error",   msg, __FILE__, __LINE__); } while (0)
+#define LOG_ERROR(msg) do   { LOG("Error",   msg, __FILE__, __LINE__); } while (0)
 
 inline void LOG(const std::string& level, const std::string& msg, const char* file, const int line)
 {
@@ -66,84 +65,69 @@ inline void LOG(const std::string& level, const std::string& msg, const char* fi
         } while (0) 
 #else
     #define ASSERT_MSG(x, msg) (void)0
-    #define ASSERT(x) (void)0
+    #define ASSERT(x)          (void)0
 #endif
 
-// define common types
+//---------------------------------------------
+// Type definitions
+//---------------------------------------------
 
-using u64 = uint64_t;
-using u32 = unsigned int;
-using u16 = unsigned short int;
-using u8 = unsigned char;
+using u64 = std::uint64_t;
+using u32 = std::uint32_t;
+using u16 = std::uint16_t;
+using u8 =  std::uint8_t;
 
 namespace spire::ecs
 {
-    class ComponentManager;
-    class Registry;
-    class ViewBase;
-    template <typename... Cs> class View;
+    using Index =       u32;
+    using EntityID =    u32;
+    using ComponentID = u32;
+    using Signature =   u64;
+
+    // constant values
+
+    inline constexpr Index       INVALID_INDEX =  std::numeric_limits<Index>::max();
+    inline constexpr EntityID    NONE =           std::numeric_limits<EntityID>::max();
+    inline constexpr EntityID    MAX_ENTITIES =   1'000'000;
+    inline constexpr ComponentID MAX_COMPONENTS = 64;
+
+    static_assert(MAX_COMPONENTS <= 64, "MAX_COMPONENTS can't be more than signature allows!");
 
     //---------------------------------------------
-    // Define entity and constant values
+    // Utility functions
     //---------------------------------------------
 
-    using Index = u32;
-    using Entity = u32;
-    using Component = size_t;
+    inline std::atomic<ComponentID> nextComponentID{0};
 
-    inline constexpr Index INVALID_INDEX = std::numeric_limits<Index>::max();
-    inline constexpr Entity NONE = std::numeric_limits<Entity>::max();
-    inline constexpr Entity MAX_ENTITIES = 10'000'000;
-    inline constexpr Component MAX_COMPONENTS = 64;
-
-    static_assert(MAX_COMPONENTS <= 64, 
-        "MAX_COMPONENTS cant be more than signature allows!");
-
-    using Signature = u64;
-
-    //---------------------------------------------
-    // ComponentIDs
-    //---------------------------------------------
-
-    inline std::atomic_size_t next{0};
-
-    Component nextComponentID() noexcept
+    inline ComponentID nextComponent() noexcept
     {
-        return next.fetch_add(1, std::memory_order_relaxed);
+        return nextComponentID.fetch_add(1, std::memory_order_relaxed);
     }
 
     template <typename C>
-    struct ComponentID
+    struct ComponentType
     {
-        inline static const Component id = nextComponentID();
+        inline static const ComponentID id = nextComponent();
     };
 
     template <typename C>
-    inline Component getComponentID() noexcept
+    inline ComponentID getComponentID() noexcept
     {
-        return ComponentID<C>::id;
+        return ComponentType<C>::id;
     }
 
-    //---------------------------------------------
-    // Function to return signature of n components
-    //---------------------------------------------
-
     template <typename... Cs>
-    static Signature getSignature()
+    inline static Signature getSignature()
     {
         Signature s = 0;
         ((s |= (Signature{1} << getComponentID<Cs>())), ...);
         return s;
     }
 
-    //---------------------------------------------
-    // Key for views
-    //---------------------------------------------
-
     struct ViewKey 
     {
         Signature signature;
-        std::vector<Component> order;
+        std::vector<ComponentID> order;
 
         bool operator==(const ViewKey& other) const noexcept 
         {
@@ -170,11 +154,14 @@ namespace spire::ecs
     // Component pool
     //---------------------------------------------
 
+    class Registry;
+    class ComponentManager;
+
     class ComponentPoolBase
     {
     public:
         virtual ~ComponentPoolBase() = default;
-        virtual void remove(Entity e) = 0;
+        virtual void remove(EntityID e) = 0;
     };
 
     template <typename C>
@@ -191,8 +178,8 @@ namespace spire::ecs
 
         using Page = std::array<Index, PAGE_SIZE>;
 
-        std::vector<C> m_components;
-        std::vector<Entity> m_entities;
+        std::vector<C>               m_components;
+        std::vector<EntityID>        m_entities;
         std::array<Page*, MAX_PAGES> m_indices{};
 
         static_assert((PAGE_SIZE & (PAGE_SIZE - 1)) == 0, "PAGE_SIZE must be power of two");
@@ -204,9 +191,9 @@ namespace spire::ecs
             for (auto& p : m_indices) delete p;
         }
 
-        void add(Entity e, C component)
+        void add(EntityID e, C component)
         {
-            const size_t page = (size_t)e / PAGE_SIZE;
+            const size_t page =  (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);
 
             if (!m_indices[page])
@@ -230,9 +217,9 @@ namespace spire::ecs
             }
         }
 
-        void remove(Entity e) override
+        void remove(EntityID e) override
         {
-            const size_t page = (size_t)e / PAGE_SIZE;
+            const size_t page =  (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);		
             
             if (!m_indices[page] || (*m_indices[page])[index] == INVALID_INDEX) return;
@@ -243,11 +230,11 @@ namespace spire::ecs
 
             if ((*m_indices[page])[index] != i)
             {
-                Entity moved = m_entities[i];
+                EntityID moved = m_entities[i];
                 m_components[(*m_indices[page])[index]] = std::move(m_components[i]);
                 m_entities[(*m_indices[page])[index]] = moved;
 
-                const size_t movedPage = (size_t)moved / PAGE_SIZE;
+                const size_t movedPage =  (size_t)moved / PAGE_SIZE;
                 const size_t movedIndex = (size_t)moved & (PAGE_SIZE - 1);
 
                 (*m_indices[movedPage])[movedIndex] = (*m_indices[page])[index];
@@ -262,10 +249,10 @@ namespace spire::ecs
 
         void clear() noexcept 
         {
-            for (Entity e : m_entities) 
+            for (EntityID e : m_entities) 
             {
-                const size_t page  = static_cast<size_t>(e) / PAGE_SIZE;
-                const size_t index = static_cast<size_t>(e) & (PAGE_SIZE - 1);
+                const size_t page =  (size_t)e / PAGE_SIZE;
+                const size_t index = (size_t)e & (PAGE_SIZE - 1);
                 if (m_indices[page]) (*m_indices[page])[index] = INVALID_INDEX;
             }
 
@@ -275,9 +262,9 @@ namespace spire::ecs
             ++m_version;
         }
 
-        C* get(Entity e) noexcept
+        C* get(EntityID e) noexcept
         {
-            const size_t page = (size_t)e / PAGE_SIZE;
+            const size_t page =  (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);	
 
             Page* p = m_indices[page];
@@ -289,9 +276,9 @@ namespace spire::ecs
             return &m_components[i];
         }
 
-        const C* get(Entity e) const noexcept
+        const C* get(EntityID e) const noexcept
         {
-            const size_t page = (size_t)e / PAGE_SIZE;
+            const size_t page =  (size_t)e / PAGE_SIZE;
             const size_t index = (size_t)e & (PAGE_SIZE - 1);	
 
             Page* p = m_indices[page];
@@ -303,13 +290,13 @@ namespace spire::ecs
             return &m_components[i];
         }
 
-        const std::vector<C>& components() const { return m_components; }
-        const std::vector<Entity>& entities() const { return  m_entities; }
-        const u64 version() const noexcept {return m_version;}
+        u64 version() const noexcept {return m_version;}
+        const std::vector<C>& components() const noexcept { return m_components; }
+        const std::vector<EntityID>& entities() const noexcept { return  m_entities; }
     };
 
     //---------------------------------------------
-    // ComponentManager manages all component pools
+    // ComponentManager
     //---------------------------------------------
 
     class ComponentManager
@@ -329,7 +316,7 @@ namespace spire::ecs
         template <typename C>
         void registerComponent()
         {
-            const Component i = getComponentID<C>();
+            const ComponentID i = getComponentID<C>();
 
             if (i >= MAX_COMPONENTS)
             {   
@@ -342,18 +329,18 @@ namespace spire::ecs
         }
 
         template <typename C>
-        void add(Entity e, C component)
+        void add(EntityID e, C component)
         {
             pool<C>().add(e, std::move(component));
         }
 
         template <typename C>
-        void remove(Entity e)
+        void remove(EntityID e)
         {
             pool<C>().remove(e);
         }
 
-        void destroy(Entity e)
+        void destroy(EntityID e)
         {
             for (auto& pool : m_pools) 
             {
@@ -365,30 +352,21 @@ namespace spire::ecs
         void clear() {pool<C>().clear();}
 
         template <typename C>
-        C* get(Entity e) noexcept
+        C* get(EntityID e) noexcept
         {
             return pool<C>().get(e);
         }
 
         template <typename C>
-        const C* get(Entity e) const noexcept
+        const C* get(EntityID e) const noexcept
         {
             return pool<C>().get(e);
         }
-        
-        template <typename C> 
-        const std::vector<C>& components() const { return pool<C>().components(); }
-
-        template <typename C> 
-        const std::vector<Entity>& entities() const { return pool<C>().entities(); }
-
-        template <typename C> 
-        const u64 version() const { return pool<C>().version(); }
 
         template <typename C> 
         ComponentPool<C>& pool()
         {
-            const Component i = getComponentID<C>();
+            const ComponentID i = getComponentID<C>();
 
             if (i >= m_pools.size() || !m_pools[i])
             {
@@ -402,7 +380,7 @@ namespace spire::ecs
         template <typename C> 
         const ComponentPool<C>& pool() const
         {
-            const Component i = getComponentID<C>();
+            const ComponentID i = getComponentID<C>();
 
             if (i >= m_pools.size() || !m_pools[i])
             {
@@ -412,10 +390,52 @@ namespace spire::ecs
 
             return *static_cast<const ComponentPool<C>*>(m_pools[i]);
         }
+
+        template <typename C> 
+        const std::vector<C>& components() const noexcept { return pool<C>().components(); }
+
+        template <typename C> 
+        const std::vector<EntityID>& entities() const noexcept { return pool<C>().entities(); }
+
+        template <typename C> 
+        const u64 version() const noexcept { return pool<C>().version(); }
     };
 
     //---------------------------------------------
-    // ViewBase
+    // Entity wrapper
+    //--------------------------------------------- 
+
+    class Entity
+    {
+    private:
+        EntityID  m_id;
+        Registry* m_reg;
+
+    public:
+        Entity(EntityID id, Registry* reg) : m_id(id), m_reg(reg) {}
+        ~Entity() = default;
+
+        template<typename C, typename... Args>
+        void add(Args&&... args);
+
+        template<typename C>
+        void remove();
+
+        void destroy();
+
+        template<typename C>
+        [[nodiscard]] C* get() noexcept;
+
+        template<typename C>
+        [[nodiscard]] const C* get() const noexcept;
+
+        [[nodiscard]] bool valid() const noexcept;
+
+        EntityID id() const;
+    };
+
+    //---------------------------------------------
+    // View
     //---------------------------------------------
 
     class ViewBase
@@ -424,8 +444,30 @@ namespace spire::ecs
         virtual ~ViewBase() = default;
     };
 
+    template <typename... Cs>
+    class View : public ViewBase
+    {
+    private:
+        std::array<u64, sizeof...(Cs)> m_versions{};
+        std::vector<std::tuple<EntityID, Cs*...>> m_cache{};
+
+        Signature m_signature;
+        Registry* m_reg;
+
+        void update(); 
+
+    public:
+        View(Registry* reg);
+        ~View() = default;
+
+        template <typename Fn>
+        void each(Fn&& fn);
+
+        std::vector<EntityID> entities();
+    };
+
     //---------------------------------------------
-    // Registry	 manages entities and its components
+    // Registry
     //---------------------------------------------
 
     class Registry
@@ -433,20 +475,23 @@ namespace spire::ecs
     private:
         ComponentManager m_componentManager;
 
-        std::queue<Entity> m_available{};
-        std::vector<Entity> m_destroy;
+        std::queue<EntityID>  m_available{};
+        std::vector<EntityID> m_destroy;
 
-        std::vector<Entity> m_alive;
+        std::vector<EntityID>  m_alive;
         std::vector<Signature> m_signatures;
-        std::vector<Index> m_indices;
+        std::vector<Index>     m_indices;
 
         std::unordered_map<ViewKey, ViewBase*, ViewKeyHash> m_views;
 
     public:
         Registry() : m_indices(MAX_ENTITIES, INVALID_INDEX), m_signatures(MAX_ENTITIES, 0)
         {
-            for (Entity e = 0; e < MAX_ENTITIES; e++) m_available.push(e);
+            for (EntityID e = 0; e < MAX_ENTITIES; e++) m_available.push(e);
         }
+
+        Registry(const Registry&) = delete;
+        Registry& operator=(const Registry&) = delete;
 
         ~Registry()
         {
@@ -460,7 +505,7 @@ namespace spire::ecs
                 if (m_indices[e] == INVALID_INDEX) continue;
 
                 Index i = (Index)m_alive.size() - 1;
-                Entity moved = m_alive[i];
+                EntityID moved = m_alive[i];
                 m_alive[m_indices[e]] = moved;
                 m_indices[moved] = m_indices[e];
 
@@ -474,8 +519,6 @@ namespace spire::ecs
             m_destroy.clear();			
         }
 
-        // manage component pools
-
         template<typename C>
         void registerComponent()
         {
@@ -487,19 +530,22 @@ namespace spire::ecs
             if (m_available.empty()) 
             {
                 LOG_WARNING("Entity limit reached!");
-                return NONE;
+                return Entity(NONE, this);
             }
 
-            Entity e = m_available.front();
+            EntityID e = m_available.front();
             m_available.pop();
 
             m_indices[e] = (Index)m_alive.size();
             m_alive.push_back(e);
 
-            return e;
+            return Entity(e, this);
         }
 
-        // reset registry
+        [[nodiscard]] Entity getEntity(EntityID e)
+        {
+            return Entity(e, this);
+        }
 
         void reset()
         {
@@ -507,10 +553,8 @@ namespace spire::ecs
             update();
         }
 
-        // manage entities and its components
-
         template<typename C, typename... Args>
-        void addComponent(Entity e, Args&&... args)
+        void addComponent(EntityID e, Args&&... args)
         {
             if (!valid(e)) return;
             C component = C(std::forward<Args>(args)...);
@@ -520,7 +564,7 @@ namespace spire::ecs
         }
 
         template<typename C>
-        void removeComponent(Entity e)
+        void removeComponent(EntityID e)
         {	
             if (!valid(e)) return;
             m_componentManager.remove<C>(e);
@@ -528,7 +572,7 @@ namespace spire::ecs
             m_signatures[e] &= ~(Signature{1} << getComponentID<C>());
         }
 
-        void destroy(Entity e)
+        void destroy(EntityID e)
         {
             if (!valid(e)) return;
             m_destroy.push_back(e);
@@ -538,70 +582,35 @@ namespace spire::ecs
         void clear() {m_componentManager.clear<C>();}
 
         template<typename C>
-        [[nodiscard]] C *getComponent(Entity e) noexcept
+        [[nodiscard]] C* getComponent(EntityID e) noexcept
         {
             if (!valid(e)) return nullptr;
             return m_componentManager.get<C>(e);
         }
 
         template<typename C>
-        [[nodiscard]] const C *getComponent(Entity e) const noexcept
+        [[nodiscard]] const C* getComponent(EntityID e) const noexcept
         {
             if (!valid(e)) return nullptr;
             return m_componentManager.get<C>(e);
         }
-        
-        template<typename C>
-        bool hasComponent(Entity e) const
-        {
-            if (!valid(e)) return false;
-            return m_componentManager.get<C>(e) != nullptr;
-        }
 
-        template <typename C> 
-        const std::vector<Entity>& entities() const 
-        { 
-            return m_componentManager.entities<C>(); 
-        }
-
-        const std::vector<Signature>& signatures() const noexcept
-        {
-            return m_signatures;
-        }
-
-        template <typename C> 
-        const u64 version() const { 
-            return m_componentManager.version<C>(); 
-        }
-
-        [[nodiscard]] bool valid(Entity e) const noexcept
+        [[nodiscard]] bool valid(EntityID e) const noexcept
         {
             if (e >= MAX_ENTITIES) 
             {
-                LOG_WARNING("Entity not available!");
+                LOG_WARNING("Entity not valid!");
                 return false;
             }
 
-            if (!isAlive(e)) return false;
-            return true;
-        }
-        
-        [[nodiscard]] bool isAlive(Entity e) const noexcept 
-        { 
             return m_indices[e] != INVALID_INDEX; 
         }
-
-        // get all alive entities
-
-        const std::vector<Entity>& alive() const { return m_alive; }
-
-        // iterate through entities with set components
 
         template <typename... Cs>
         View<Cs...>* view()
         {
             Signature signature = getSignature<Cs...>();
-            ViewKey key {signature, std::vector<Component> {getComponentID<Cs>()...}};
+            ViewKey key {signature, std::vector<ComponentID> {getComponentID<Cs>()...}};
 
             if (auto it = m_views.find(key); it != m_views.end()) 
             {
@@ -611,76 +620,130 @@ namespace spire::ecs
             auto view = new View<Cs...>(this);
             m_views.emplace(key, std::move(view));
             return view;
-        }   
+        } 
+        
+        template <typename C> 
+        const std::vector<EntityID>& entities() const {return m_componentManager.entities<C>();}
+
+        const std::vector<Signature>& signatures() const noexcept {return m_signatures;}
+        
+        const std::vector<EntityID>& alive() const { return m_alive; }
+
+        template <typename C> 
+        u64 version() const {return m_componentManager.version<C>();}
+
     };
 
-    //---------------------------------------------
-    // View to look up entities with given components
-    //---------------------------------------------
+    // entity definitions
+
+    template<typename C, typename... Args>
+    inline void Entity::add(Args&&... args)
+    {
+        m_reg->addComponent<C>(m_id, std::forward<Args>(args)...);
+    }
+
+    template<typename C>
+    inline void Entity::remove()
+    {
+        m_reg->removeComponent<C>(m_id);
+    }
+
+    inline void Entity::destroy()
+    {
+        m_reg->destroy(m_id);
+    }
+
+    template<typename C>
+    [[nodiscard]] inline C* Entity::get() noexcept
+    {
+        return m_reg->getComponent<C>(m_id);
+    }
+
+    template<typename C>
+    [[nodiscard]] inline const C* Entity::get() const noexcept
+    {
+        return m_reg->getComponent<C>(m_id);
+    }
+
+    [[nodiscard]] inline bool Entity::valid() const noexcept
+    {
+        return m_reg->valid(m_id);
+    }
+
+    inline EntityID Entity::id() const {return m_id;}
+
+    // view definitions
 
     template <typename... Cs>
-    class View : public ViewBase
+    inline void View<Cs...>::update()
     {
-    private:
-        std::array<u64, sizeof...(Cs)> m_versions{};
-        std::vector<std::tuple<Entity, Cs*...>> m_cache{};
+        std::array<u64, sizeof...(Cs)> versions {
+            m_reg->template version<Cs>()...
+        };
 
-        Signature m_signature;
-        Registry* m_reg;
+        if (m_versions == versions) return;
+        m_versions = versions;
 
-        void update()
+        std::array<const std::vector<EntityID>*, sizeof...(Cs)> entitiesArr {
+            &m_reg->template entities<Cs>()...
+        };
+
+        const std::vector<EntityID>* smallest = entitiesArr[0];
+        for (const auto* entities : entitiesArr)
         {
-            std::array<u64, sizeof...(Cs)> versions {
-                m_reg->template version<Cs>()...
-            };
+            if (smallest->size() > entities->size()) smallest = entities;
+        } 
 
-            if (m_versions == versions) return;
-            m_versions = versions;
+        m_cache.clear();
+        m_cache.reserve(smallest->size());
 
-            std::array<const std::vector<Entity>*, sizeof...(Cs)> entitiesArr {
-                &m_reg->template entities<Cs>()...
-            };
+        const auto& signatures = m_reg->signatures();
 
-            const std::vector<Entity>* smallest = entitiesArr[0];
-            for (const auto* entities : entitiesArr)
-            {
-                if (smallest->size() > entities->size()) smallest = entities;
-            } 
-
-            m_cache.clear();
-            m_cache.reserve(smallest->size());
-
-            const auto& signatures = m_reg->signatures();
-
-            for (auto e : *smallest)
-            {	
-                if ((signatures[e] & m_signature) != m_signature) continue;
-                m_cache.emplace_back(e, m_reg->getComponent<Cs>(e)...);
-            }
-        }   
-
-    public:
-        View(Registry* reg) 
-            : m_reg(reg)
-            , m_signature(getSignature<Cs...>()) 
+        for (auto e : *smallest)
+        {	
+            if ((signatures[e] & m_signature) != m_signature) continue;
+            m_cache.emplace_back(e, m_reg->getComponent<Cs>(e)...);
+        }
+    } 
+    
+    template <typename... Cs>
+    inline View<Cs...>::View(Registry* reg) 
+        : m_reg(reg)
+        , m_signature(getSignature<Cs...>()) 
+    {
+        for (auto& version : m_versions)
         {
-            for (auto& version : m_versions)
-            {
-                version = std::numeric_limits<u64>::max();
-            }
+            version = std::numeric_limits<u64>::max();
+        }
+    }
+
+    template <typename... Cs>
+    template <typename Fn>
+    inline void View<Cs...>::each(Fn&& fn)
+    {
+        update();
+
+        for (auto& tuple : m_cache)
+        {
+            std::apply([&](EntityID e, auto*... components){
+                std::invoke(std::forward<Fn>(fn), e, (*components)...);
+            }, tuple);
+        }
+    }
+
+    template <typename... Cs>
+    inline std::vector<EntityID> View<Cs...>::entities()
+    {
+        update();
+
+        std::vector<EntityID> entities;
+        entities.reserve(m_cache.size());
+
+        for (auto& tuple : m_cache)
+        {
+            entities.push_back(std::get<0>(tuple));
         }
 
-        template <typename Fn>
-        void each(Fn&& fn)
-        {
-            update();
-
-            for (auto& tuple : m_cache)
-            {
-                std::apply([&](Entity e, auto*... components){
-                    std::invoke(std::forward<Fn>(fn), e, (*components)...);
-                }, tuple);
-            }
-        }
-    };
+        return entities;
+    }
 }
